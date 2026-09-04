@@ -1,37 +1,51 @@
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
-from schemas import ItemCreate, ItemResponse, ItemUpdate, ErrorResponse
+
+from database import get_db
+import models
+import schemas
 
 app = FastAPI(title="Campus Lost and Found API")
 
-# Temporary in-memory database store for Day 2 mockup
-items_db = []
 
 @app.get("/health", tags=["Health Check"])
 def health_check():
-    return {"status": "healthy", "message": "Campus Lost and Found API is running successfully"}
-
-# 1. Create Item
-@app.post("/items", response_model=ItemResponse, status_code=status.HTTP_201_CREATED, tags=["Items"])
-def create_item(item: ItemCreate):
-    new_item = {
-        "id": len(items_db) + 1,
-        **item.model_dump(),
-        "created_at": "2026-09-01T10:00:00",
-        "is_claimed": False
+    return {
+        "status": "healthy",
+        "message": "Campus Lost and Found API is running successfully",
     }
-    items_db.append(new_item)
-    return new_item
 
-# 2. Get All Items
-@app.get("/items", response_model=List[ItemResponse], tags=["Items"])
-def get_items():
-    return items_db
 
-# 3. Get Single Item by ID
-@app.get("/items/{item_id}", response_model=ItemResponse, responses={404: {"model": ErrorResponse}}, tags=["Items"])
-def get_item(item_id: int):
-    for item in items_db:
-        if item["id"] == item_id:
-            return item
-    raise HTTPException(status_code=404, detail="Item not found")
+# POST /items - Create Item with Transactional Write & Validation
+@app.post(
+    "/items",
+    response_model=schemas.ItemResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Items"],
+)
+async def create_item(
+    item: schemas.ItemCreate, db: AsyncSession = Depends(get_db)
+):
+    # Field Validation: Ensure status is either 'lost' or 'found'
+    if item.status.lower() not in ["lost", "found"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Status must be either 'lost' or 'found'.",
+        )
+
+    # Convert Pydantic schema to SQLAlchemy database model instance
+    db_item = models.Item(
+        title=item.title,
+        description=item.description,
+        category=item.category,
+        location=item.location,
+        status=item.status.lower(),
+    )
+
+    # Persist object inside a transactional session
+    db.add(db_item)
+    await db.commit()
+    await db.refresh(db_item)
+
+    return db_item
