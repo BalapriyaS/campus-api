@@ -49,7 +49,7 @@ async def create_item(
     return db_item
 
 
-# GET /items - List Items with Stable Ordering & Pagination
+# GET /items - List Items (Paginated)
 @app.get(
     "/items",
     response_model=List[schemas.ItemResponse],
@@ -72,7 +72,7 @@ async def get_items(
     return items
 
 
-# GET /items/{item_id} - Fetch Item Detail by ID
+# GET /items/{item_id} - Fetch Item Detail
 @app.get(
     "/items/{item_id}",
     response_model=schemas.ItemResponse,
@@ -91,3 +91,69 @@ async def get_item(item_id: int, db: AsyncSession = Depends(get_db)):
         )
 
     return item
+
+
+# PATCH /items/{item_id} - Partial Update Item
+@app.patch(
+    "/items/{item_id}",
+    response_model=schemas.ItemResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["Items"],
+)
+async def update_item(
+    item_id: int,
+    item_update: schemas.ItemUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(models.Item).where(models.Item.id == item_id)
+    result = await db.execute(query)
+    db_item = result.scalar_one_or_none()
+
+    if db_item is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Item with ID {item_id} not found.",
+        )
+
+    # Validate status if provided
+    if item_update.status is not None:
+        if item_update.status.lower() not in ["lost", "found"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Status must be either 'lost' or 'found'.",
+            )
+        db_item.status = item_update.status.lower()
+
+    # Update only provided fields
+    update_data = item_update.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        if key != "status":  # Already handled status above
+            setattr(db_item, key, value)
+
+    await db.commit()
+    await db.refresh(db_item)
+
+    return db_item
+
+
+# DELETE /items/{item_id} - Delete Item
+@app.delete(
+    "/items/{item_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["Items"],
+)
+async def delete_item(item_id: int, db: AsyncSession = Depends(get_db)):
+    query = select(models.Item).where(models.Item.id == item_id)
+    result = await db.execute(query)
+    db_item = result.scalar_one_or_none()
+
+    if db_item is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Item with ID {item_id} not found.",
+        )
+
+    await db.delete(db_item)
+    await db.commit()
+
+    return None
