@@ -1,11 +1,31 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Query
+import os
+from fastapi import FastAPI, Depends, HTTPException, status, Query, Security
+from fastapi.security import APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from typing import List
+from dotenv import load_dotenv
 
 from database import get_db
 import models
 import schemas
+
+# Load environment variables from .env
+load_dotenv()
+
+API_KEY = os.getenv("API_KEY", "default_secret_key")
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+# Dependency to verify API Key header
+async def verify_api_key(api_key: str = Security(api_key_header)):
+    if api_key != API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API Key",
+        )
+    return api_key
+
 
 app = FastAPI(title="Campus Lost and Found API")
 
@@ -18,11 +38,12 @@ def health_check():
     }
 
 
-# POST /items - Create Item
+# POST /items - Protected
 @app.post(
     "/items",
     response_model=schemas.ItemResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(verify_api_key)],
     tags=["Items"],
 )
 async def create_item(
@@ -49,7 +70,7 @@ async def create_item(
     return db_item
 
 
-# GET /items - List Items (Paginated)
+# GET /items - Public
 @app.get(
     "/items",
     response_model=List[schemas.ItemResponse],
@@ -72,7 +93,7 @@ async def get_items(
     return items
 
 
-# GET /items/{item_id} - Fetch Item Detail
+# GET /items/{item_id} - Public
 @app.get(
     "/items/{item_id}",
     response_model=schemas.ItemResponse,
@@ -93,11 +114,12 @@ async def get_item(item_id: int, db: AsyncSession = Depends(get_db)):
     return item
 
 
-# PATCH /items/{item_id} - Partial Update Item
+# PATCH /items/{item_id} - Protected
 @app.patch(
     "/items/{item_id}",
     response_model=schemas.ItemResponse,
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(verify_api_key)],
     tags=["Items"],
 )
 async def update_item(
@@ -115,7 +137,6 @@ async def update_item(
             detail=f"Item with ID {item_id} not found.",
         )
 
-    # Validate status if provided
     if item_update.status is not None:
         if item_update.status.lower() not in ["lost", "found"]:
             raise HTTPException(
@@ -124,10 +145,9 @@ async def update_item(
             )
         db_item.status = item_update.status.lower()
 
-    # Update only provided fields
     update_data = item_update.model_dump(exclude_unset=True)
     for key, value in update_data.items():
-        if key != "status":  # Already handled status above
+        if key != "status":
             setattr(db_item, key, value)
 
     await db.commit()
@@ -136,10 +156,11 @@ async def update_item(
     return db_item
 
 
-# DELETE /items/{item_id} - Delete Item
+# DELETE /items/{item_id} - Protected
 @app.delete(
     "/items/{item_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(verify_api_key)],
     tags=["Items"],
 )
 async def delete_item(item_id: int, db: AsyncSession = Depends(get_db)):
