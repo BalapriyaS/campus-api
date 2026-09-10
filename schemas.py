@@ -3,7 +3,6 @@ from typing import Optional
 from datetime import datetime
 
 
-# Shared base attributes
 class ItemBase(BaseModel):
     title: str
     description: Optional[str] = None
@@ -12,12 +11,10 @@ class ItemBase(BaseModel):
     status: str
 
 
-# Schema for creation (requires all base fields)
 class ItemCreate(ItemBase):
     pass
 
 
-# Schema for updates (all fields optional for partial updates)
 class ItemUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
@@ -27,10 +24,10 @@ class ItemUpdate(BaseModel):
     is_claimed: Optional[bool] = None
 
 
-# Schema for responses
 class ItemResponse(ItemBase):
     id: int
     is_claimed: bool
+    owner_id: str
     created_at: datetime
 
     class Config:

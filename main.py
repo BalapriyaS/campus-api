@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, Depends, HTTPException, status, Query, Security
+from fastapi import FastAPI, Depends, HTTPException, status, Query, Security, Header
 from fastapi.security import APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -10,14 +10,12 @@ from database import get_db
 import models
 import schemas
 
-# Load environment variables from .env
 load_dotenv()
 
-API_KEY = os.getenv("API_KEY", "default_secret_key")
+API_KEY = os.getenv("API_KEY", "supersecretkey123")
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
-# Dependency to verify API Key header
 async def verify_api_key(api_key: str = Security(api_key_header)):
     if api_key != API_KEY:
         raise HTTPException(
@@ -25,6 +23,10 @@ async def verify_api_key(api_key: str = Security(api_key_header)):
             detail="Invalid or missing API Key",
         )
     return api_key
+
+
+async def get_current_user(x_user_id: str = Header(default="user_1")):
+    return x_user_id
 
 
 app = FastAPI(title="Campus Lost and Found API")
@@ -38,7 +40,7 @@ def health_check():
     }
 
 
-# POST /items - Protected
+# POST /items - Create Item assigned to current user
 @app.post(
     "/items",
     response_model=schemas.ItemResponse,
@@ -47,7 +49,9 @@ def health_check():
     tags=["Items"],
 )
 async def create_item(
-    item: schemas.ItemCreate, db: AsyncSession = Depends(get_db)
+    item: schemas.ItemCreate,
+    current_user: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     if item.status.lower() not in ["lost", "found"]:
         raise HTTPException(
@@ -61,6 +65,7 @@ async def create_item(
         category=item.category,
         location=item.location,
         status=item.status.lower(),
+        owner_id=current_user,
     )
 
     db.add(db_item)
@@ -70,7 +75,7 @@ async def create_item(
     return db_item
 
 
-# GET /items - Public
+# GET /items - Public list
 @app.get(
     "/items",
     response_model=List[schemas.ItemResponse],
@@ -93,7 +98,7 @@ async def get_items(
     return items
 
 
-# GET /items/{item_id} - Public
+# GET /items/{item_id} - Public detail
 @app.get(
     "/items/{item_id}",
     response_model=schemas.ItemResponse,
@@ -114,7 +119,7 @@ async def get_item(item_id: int, db: AsyncSession = Depends(get_db)):
     return item
 
 
-# PATCH /items/{item_id} - Protected
+# PATCH /items/{item_id} - Protected & Owner-only
 @app.patch(
     "/items/{item_id}",
     response_model=schemas.ItemResponse,
@@ -125,6 +130,7 @@ async def get_item(item_id: int, db: AsyncSession = Depends(get_db)):
 async def update_item(
     item_id: int,
     item_update: schemas.ItemUpdate,
+    current_user: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(models.Item).where(models.Item.id == item_id)
@@ -135,6 +141,13 @@ async def update_item(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Item with ID {item_id} not found.",
+        )
+
+    # Ownership Authorization Check
+    if db_item.owner_id != current_user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to modify this item.",
         )
 
     if item_update.status is not None:
@@ -156,14 +169,18 @@ async def update_item(
     return db_item
 
 
-# DELETE /items/{item_id} - Protected
+# DELETE /items/{item_id} - Protected & Owner-only
 @app.delete(
     "/items/{item_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(verify_api_key)],
     tags=["Items"],
 )
-async def delete_item(item_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_item(
+    item_id: int,
+    current_user: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     query = select(models.Item).where(models.Item.id == item_id)
     result = await db.execute(query)
     db_item = result.scalar_one_or_none()
@@ -172,6 +189,13 @@ async def delete_item(item_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Item with ID {item_id} not found.",
+        )
+
+    # Ownership Authorization Check
+    if db_item.owner_id != current_user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to delete this item.",
         )
 
     await db.delete(db_item)
