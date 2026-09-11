@@ -3,7 +3,8 @@ from fastapi import FastAPI, Depends, HTTPException, status, Query, Security, He
 from fastapi.security import APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from typing import List
+from sqlalchemy import or_
+from typing import List, Optional
 from dotenv import load_dotenv
 
 from database import get_db
@@ -40,7 +41,7 @@ def health_check():
     }
 
 
-# POST /items - Create Item assigned to current user
+# POST /items - Create Item
 @app.post(
     "/items",
     response_model=schemas.ItemResponse,
@@ -75,7 +76,7 @@ async def create_item(
     return db_item
 
 
-# GET /items - Public list
+# GET /items - List Items with Search, Filters, and Pagination
 @app.get(
     "/items",
     response_model=List[schemas.ItemResponse],
@@ -83,22 +84,42 @@ async def create_item(
     tags=["Items"],
 )
 async def get_items(
+    q: Optional[str] = Query(None, description="Search term for title or description"),
+    status_param: Optional[str] = Query(None, alias="status", description="Filter by status (lost/found)"),
+    category: Optional[str] = Query(None, description="Filter by category"),
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
-    query = (
-        select(models.Item)
-        .order_by(models.Item.id.desc())
-        .offset(skip)
-        .limit(limit)
-    )
+    query = select(models.Item)
+
+    # Filter by status if provided
+    if status_param:
+        query = query.where(models.Item.status == status_param.lower())
+
+    # Filter by category if provided
+    if category:
+        query = query.where(models.Item.category.ilike(f"%{category}%"))
+
+    # Search keyword in title or description if provided
+    if q:
+        search_pattern = f"%{q}%"
+        query = query.where(
+            or_(
+                models.Item.title.ilike(search_pattern),
+                models.Item.description.ilike(search_pattern),
+            )
+        )
+
+    # Deterministic ordering and pagination
+    query = query.order_by(models.Item.id.desc()).offset(skip).limit(limit)
+
     result = await db.execute(query)
     items = result.scalars().all()
     return items
 
 
-# GET /items/{item_id} - Public detail
+# GET /items/{item_id} - Fetch Detail
 @app.get(
     "/items/{item_id}",
     response_model=schemas.ItemResponse,
@@ -119,7 +140,7 @@ async def get_item(item_id: int, db: AsyncSession = Depends(get_db)):
     return item
 
 
-# PATCH /items/{item_id} - Protected & Owner-only
+# PATCH /items/{item_id} - Partial Update
 @app.patch(
     "/items/{item_id}",
     response_model=schemas.ItemResponse,
@@ -143,7 +164,6 @@ async def update_item(
             detail=f"Item with ID {item_id} not found.",
         )
 
-    # Ownership Authorization Check
     if db_item.owner_id != current_user:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -169,7 +189,7 @@ async def update_item(
     return db_item
 
 
-# DELETE /items/{item_id} - Protected & Owner-only
+# DELETE /items/{item_id} - Delete Item
 @app.delete(
     "/items/{item_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -191,7 +211,6 @@ async def delete_item(
             detail=f"Item with ID {item_id} not found.",
         )
 
-    # Ownership Authorization Check
     if db_item.owner_id != current_user:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
