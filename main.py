@@ -2,14 +2,12 @@ import os
 from fastapi import FastAPI, Depends, HTTPException, status, Query, Security, Header
 from fastapi.security import APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from sqlalchemy import or_
 from typing import List, Optional
 from dotenv import load_dotenv
 
 from database import get_db
-import models
 import schemas
+from services import ItemService
 
 load_dotenv()
 
@@ -41,7 +39,6 @@ def health_check():
     }
 
 
-# POST /items - Create Item
 @app.post(
     "/items",
     response_model=schemas.ItemResponse,
@@ -54,29 +51,9 @@ async def create_item(
     current_user: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if item.status.lower() not in ["lost", "found"]:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Status must be either 'lost' or 'found'.",
-        )
-
-    db_item = models.Item(
-        title=item.title,
-        description=item.description,
-        category=item.category,
-        location=item.location,
-        status=item.status.lower(),
-        owner_id=current_user,
-    )
-
-    db.add(db_item)
-    await db.commit()
-    await db.refresh(db_item)
-
-    return db_item
+    return await ItemService.create_item(db, item, current_user)
 
 
-# GET /items - List Items with Search, Filters, and Pagination
 @app.get(
     "/items",
     response_model=List[schemas.ItemResponse],
@@ -91,35 +68,9 @@ async def get_items(
     limit: int = Query(10, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(models.Item)
-
-    # Filter by status if provided
-    if status_param:
-        query = query.where(models.Item.status == status_param.lower())
-
-    # Filter by category if provided
-    if category:
-        query = query.where(models.Item.category.ilike(f"%{category}%"))
-
-    # Search keyword in title or description if provided
-    if q:
-        search_pattern = f"%{q}%"
-        query = query.where(
-            or_(
-                models.Item.title.ilike(search_pattern),
-                models.Item.description.ilike(search_pattern),
-            )
-        )
-
-    # Deterministic ordering and pagination
-    query = query.order_by(models.Item.id.desc()).offset(skip).limit(limit)
-
-    result = await db.execute(query)
-    items = result.scalars().all()
-    return items
+    return await ItemService.get_items(db, q, status_param, category, skip, limit)
 
 
-# GET /items/{item_id} - Fetch Detail
 @app.get(
     "/items/{item_id}",
     response_model=schemas.ItemResponse,
@@ -127,20 +78,9 @@ async def get_items(
     tags=["Items"],
 )
 async def get_item(item_id: int, db: AsyncSession = Depends(get_db)):
-    query = select(models.Item).where(models.Item.id == item_id)
-    result = await db.execute(query)
-    item = result.scalar_one_or_none()
-
-    if item is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Item with ID {item_id} not found.",
-        )
-
-    return item
+    return await ItemService.get_item_by_id(db, item_id)
 
 
-# PATCH /items/{item_id} - Partial Update
 @app.patch(
     "/items/{item_id}",
     response_model=schemas.ItemResponse,
@@ -154,42 +94,9 @@ async def update_item(
     current_user: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(models.Item).where(models.Item.id == item_id)
-    result = await db.execute(query)
-    db_item = result.scalar_one_or_none()
-
-    if db_item is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Item with ID {item_id} not found.",
-        )
-
-    if db_item.owner_id != current_user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not authorized to modify this item.",
-        )
-
-    if item_update.status is not None:
-        if item_update.status.lower() not in ["lost", "found"]:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Status must be either 'lost' or 'found'.",
-            )
-        db_item.status = item_update.status.lower()
-
-    update_data = item_update.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        if key != "status":
-            setattr(db_item, key, value)
-
-    await db.commit()
-    await db.refresh(db_item)
-
-    return db_item
+    return await ItemService.update_item(db, item_id, item_update, current_user)
 
 
-# DELETE /items/{item_id} - Delete Item
 @app.delete(
     "/items/{item_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -201,23 +108,5 @@ async def delete_item(
     current_user: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(models.Item).where(models.Item.id == item_id)
-    result = await db.execute(query)
-    db_item = result.scalar_one_or_none()
-
-    if db_item is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Item with ID {item_id} not found.",
-        )
-
-    if db_item.owner_id != current_user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not authorized to delete this item.",
-        )
-
-    await db.delete(db_item)
-    await db.commit()
-
+    await ItemService.delete_item(db, item_id, current_user)
     return None
