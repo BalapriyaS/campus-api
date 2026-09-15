@@ -1,3 +1,4 @@
+import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import or_
@@ -7,6 +8,8 @@ from typing import List, Optional
 import models
 import schemas
 
+logger = logging.getLogger("campus_api")
+
 
 class ItemService:
 
@@ -15,6 +18,7 @@ class ItemService:
         db: AsyncSession, item_data: schemas.ItemCreate, owner_id: str
     ) -> models.Item:
         if item_data.status.lower() not in ["lost", "found"]:
+            logger.warning(f"Invalid status submitted: {item_data.status}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Status must be either 'lost' or 'found'.",
@@ -28,10 +32,16 @@ class ItemService:
             status=item_data.status.lower(),
             owner_id=owner_id,
         )
-        db.add(db_item)
-        await db.commit()
-        await db.refresh(db_item)
-        return db_item
+        try:
+            db.add(db_item)
+            await db.commit()
+            await db.refresh(db_item)
+            logger.info(f"Item created successfully with ID: {db_item.id}")
+            return db_item
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"Failed to create item, transaction rolled back. Error: {str(e)}")
+            raise e
 
     @staticmethod
     async def get_items(
@@ -68,6 +78,7 @@ class ItemService:
         item = result.scalar_one_or_none()
 
         if item is None:
+            logger.warning(f"Item query missed for ID: {item_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Item with ID {item_id} not found.",
@@ -84,6 +95,7 @@ class ItemService:
         db_item = await ItemService.get_item_by_id(db, item_id)
 
         if db_item.owner_id != current_user:
+            logger.warning(f"Unauthorized update attempt on item {item_id} by user {current_user}")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You are not authorized to modify this item.",
@@ -102,9 +114,15 @@ class ItemService:
             if key != "status":
                 setattr(db_item, key, value)
 
-        await db.commit()
-        await db.refresh(db_item)
-        return db_item
+        try:
+            await db.commit()
+            await db.refresh(db_item)
+            logger.info(f"Item ID {item_id} updated successfully")
+            return db_item
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"Failed to update item {item_id}, transaction rolled back. Error: {str(e)}")
+            raise e
 
     @staticmethod
     async def delete_item(
@@ -113,10 +131,17 @@ class ItemService:
         db_item = await ItemService.get_item_by_id(db, item_id)
 
         if db_item.owner_id != current_user:
+            logger.warning(f"Unauthorized delete attempt on item {item_id} by user {current_user}")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You are not authorized to delete this item.",
             )
 
-        await db.delete(db_item)
-        await db.commit()
+        try:
+            await db.delete(db_item)
+            await db.commit()
+            logger.info(f"Item ID {item_id} deleted successfully")
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"Failed to delete item {item_id}, transaction rolled back. Error: {str(e)}")
+            raise e

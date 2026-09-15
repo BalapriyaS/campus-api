@@ -1,5 +1,7 @@
 import os
-from fastapi import FastAPI, Depends, HTTPException, status, Query, Security, Header
+import logging
+from fastapi import FastAPI, Depends, HTTPException, status, Query, Security, Header, Request
+from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
@@ -9,6 +11,13 @@ from database import get_db
 import schemas
 from services import ItemService
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("campus_api")
+
 load_dotenv()
 
 API_KEY = os.getenv("API_KEY", "supersecretkey123")
@@ -17,6 +26,7 @@ api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 async def verify_api_key(api_key: str = Security(api_key_header)):
     if api_key != API_KEY:
+        logger.warning("Failed API Key authorization attempt")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing API Key",
@@ -29,6 +39,16 @@ async def get_current_user(x_user_id: str = Header(default="user_1")):
 
 
 app = FastAPI(title="Campus Lost and Found API")
+
+
+# Global Exception Handler for Unhandled Errors
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled error occurred on route {request.url.path}: {str(exc)}", exc_info=True)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "An unexpected server error occurred. Please try again later."},
+    )
 
 
 @app.get("/health", tags=["Health Check"])
